@@ -9,7 +9,7 @@ BOOTLOADER_START=0x7800
 AVRDUDE_MCU=m32
 endif
 
-DEFS           = -DBOOTLOADER_START=$(BOOTLOADER_START)
+DEFS           = -DBOOTLOADER_START=$(BOOTLOADER_START) -DOSCCAL_VALUE=0xAA
 LIBS           =
 
 # Override is only needed by avr-lib build system.
