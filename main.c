@@ -39,11 +39,11 @@
 /* 25ms @8MHz */
 #define TIMER_RELOAD            (0xFF - 195)
 
-/* 40 * 25ms */
+/* 40 * 25ms = 1s */
 #define TIMEOUT                 40
 
-#define EN_TX                   (1<<PORTD2)
-#define LED_GN                  (1<<PORTD3)
+#define RXTX                    PORTD2
+#define LED                     PORTD3
 
 #define BAUDRATE                115200
 #define MPM_ADDRESS             0x11
@@ -75,8 +75,7 @@
 #define UART_CALC_BAUDRATE(baudRate) (((uint32_t)F_CPU) / (((uint32_t)baudRate)*16) -1)
 
 /*
- * LED_GN blinks with 20Hz (while bootloader is running)
- * LED_RT blinks on activity
+ * LED blinks with 20Hz (while bootloader is running)
  *
  * general protocol:
  * =================
@@ -147,8 +146,7 @@ const static uint8_t chipinfo[8] = {
     (E2END +1) & 0xFF
 };
 
-/* wait 40 * 25ms = 1s */
-static uint8_t boot_timeout = TIMEOUT;
+volatile static uint8_t boot_timeout = TIMEOUT;
 volatile static uint8_t boot_wait = BOOTWAIT_RUNNING;
 
 static uint8_t rx_addressed;
@@ -228,9 +226,15 @@ ISR(USART_RXC_vect)
     if (rx_addressed == 0) {
         /* own address, disable MPM mode and receive following bytes */
         if (data == MPM_ADDRESS) {
-            boot_wait = BOOTWAIT_INTERRUPTED;
+#if 0
+            /* stay in bootloader */
+            boot_wait    = BOOTWAIT_INTERRUPTED;
+#else
+            /* restart timeout */
+            boot_timeout = TIMEOUT;
+#endif
             /* enable LED */
-            PORTD &= ~(LED_GN);
+            PORTD &= ~(1<<LED);
 
             UCSRA &= ~(1<<MPCM);
             rx_addressed = 1;
@@ -346,7 +350,7 @@ ISR(USART_RXC_vect)
             }
 
             /* kickoff transmit */
-            UCSRB    |= (1<<UDRIE);
+            UCSRB |= (1<<UDRIE);
         }
 
         rx_bcnt++;
@@ -357,7 +361,7 @@ ISR(USART_UDRE_vect)
 {
     if (tx_bcnt == 0) {
         /* enable RS485 transmitter */
-        PORTD |= EN_TX;
+        PORTD |= (1<<RXTX);
 
         UCSRB &= ~(1<<TXB8);
         UDR    = tx_cmd;
@@ -404,10 +408,10 @@ ISR(USART_UDRE_vect)
 ISR(USART_TXC_vect)
 {
     /* disable LED */
-    PORTD |= LED_GN;
+    PORTD |= (1<<LED);
 
     /* disable RS485 transmitter */
-    PORTD &= ~(EN_TX);
+    PORTD &= ~(1<<RXTX);
 
     /* enable MP mode again */
     UCSRA |= (1<<MPCM);
@@ -425,7 +429,7 @@ ISR(TIMER0_OVF_vect)
     TCNT0 = TIMER_RELOAD;
 
     if (boot_wait == BOOTWAIT_RUNNING) {
-        PORTD ^= LED_GN;
+        PORTD ^= (1<<LED);
 
         boot_timeout--;
         if (boot_timeout == 0) {
@@ -450,7 +454,7 @@ int main(void) __attribute__ ((noreturn));
 int main(void)
 {
     /* LED and TXEN are outputs */
-    DDRD |= LED_GN | EN_TX;
+    DDRD |= (1<<LED) | (1<<RXTX);
 
 #if defined(OSCCAL_VALUE)
     OSCCAL = OSCCAL_VALUE;
@@ -495,7 +499,7 @@ int main(void)
 #endif
 
     /* disable LED */
-    PORTD |= LED_GN;
+    PORTD |= (1<<LED);
 
     uint16_t wait = 0x0000;
     do {
