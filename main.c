@@ -478,6 +478,9 @@ int main(void)
     UBRRH = (UART_CALC_BAUDRATE(BAUDRATE)>>8) & 0xFF;
     UBRRL = (UART_CALC_BAUDRATE(BAUDRATE) & 0xFF);
 
+    /* store MPM address in TWI register for application */
+    TWAR  = MPM_ADDRESS;
+
     /* 11.354ms for 109 bits @9600 */
     /* 946.18us for 109 bits @115200 */
 //    uart_send("1234567890");
