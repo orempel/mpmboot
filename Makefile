@@ -3,13 +3,16 @@ OBJ            = main.o
 MCU_TARGET     = atmega32
 OPTIMIZE       = -Os
 
+#AVRDUDE_PROG   = -c avr910 -b 115200 -P /dev/ttyUSB2
+AVRDUDE_PROG   = -c dragon_isp -P usb
+
 ifeq ($(MCU_TARGET), atmega32)
 # hfuse = 0x?A (2k bootloader)
 BOOTLOADER_START=0x7800
 AVRDUDE_MCU=m32
 endif
 
-DEFS           = -DBOOTLOADER_START=$(BOOTLOADER_START) -DOSCCAL_VALUE=0xAA
+DEFS           = -DBOOTLOADER_START=$(BOOTLOADER_START) -DOSCCAL_VALUE=0xA8 -DOSCCAL_CHECK=0 -DMPM_ADDRESS=0x11
 LIBS           =
 
 # Override is only needed by avr-lib build system.
@@ -50,7 +53,14 @@ bin:  $(PRG).bin
 	$(OBJCOPY) -j .text -j .data -O binary $< $@
 
 install: text
-	avrdude -c dragon_isp -P usb -p $(AVRDUDE_MCU) -V -U flash:w:$(PRG).hex
+	avrdude $(AVRDUDE_PROG) -p $(AVRDUDE_MCU) -V -U flash:w:$(PRG).hex
+
+fuses:
+	avrdude $(AVRDUDE_PROG) -p $(AVRDUDE_MCU) -U hfuse:w:0xda:m
+	avrdude $(AVRDUDE_PROG) -p $(AVRDUDE_MCU) -U lfuse:w:0xd4:m
+
+osccal:
+	avrdude $(AVRDUDE_PROG) -p $(AVRDUDE_MCU) -U calibration:r:-:h
 
 reset:
-	avrdude -c dragon_isp -P usb -p $(AVRDUDE_MCU)
+	avrdude $(AVRDUDE_PROG) -p $(AVRDUDE_MCU)

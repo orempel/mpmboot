@@ -46,7 +46,9 @@
 #define LED                     PORTD3
 
 #define BAUDRATE                115200
+#ifndef MPM_ADDRESS
 #define MPM_ADDRESS             0x11
+#endif /* MPM_ADDRESS */
 
 #define EEPROM_SUPPORT          1
 
@@ -438,7 +440,7 @@ ISR(TIMER0_OVF_vect)
     }
 }
 
-#if 0
+#if (OSCCAL_CHECK)
 static void uart_send(char *p)
 {
     while (*p) {
@@ -446,7 +448,7 @@ static void uart_send(char *p)
         UDR = *p++;
     }
 }
-#endif
+#endif /* (OSCCAL_CHECK) */
 
 static void (*jump_to_app)(void) __attribute__ ((noreturn)) = 0x0000;
 
@@ -481,9 +483,11 @@ int main(void)
     /* store MPM address in TWI register for application */
     TWAR  = MPM_ADDRESS;
 
+#if (OSCCAL_CHECK)
     /* 11.354ms for 109 bits @9600 */
     /* 946.18us for 109 bits @115200 */
-//    uart_send("1234567890");
+    uart_send("1234567890");
+#endif /* (OSCCAL_CHECK) */
 
     sei();
 
