@@ -42,8 +42,14 @@
 /* 40 * 25ms = 1s */
 #define TIMEOUT                 40
 
-#define RXTX                    PORTD2
-#define LED                     PORTD3
+#define RXTX_DDR                DDRD
+#define RXTX_PORT               PORTD
+#define RXTX_NUM                PORTD2
+
+#define LED_INIT()              DDRD |= (1<<PORTD3)
+#define LED_OFF()               PORTD |= (1<<PORTD3)
+#define LED_ON()                PORTD &= ~(1<<PORTD3)
+#define LED_TOGGLE()            PORTD ^= (1<<PORTD3)
 
 #define BAUDRATE                115200
 #ifndef MPM_ADDRESS
@@ -51,28 +57,6 @@
 #endif /* MPM_ADDRESS */
 
 #define EEPROM_SUPPORT          1
-
-#define CMD_WAIT                0x00
-#define CMD_SWITCH_MODE         0x01
-#define CMD_GET_VERSION         0x02
-#define CMD_GET_CHIPINFO        0x03
-#define CMD_READ_MEMORY         0x11
-#define CMD_WRITE_MEMORY        0x12
-
-#define CAUSE_SUCCESS           0x00
-#define CAUSE_NOT_SUPPORTED     0xF0
-#define CAUSE_INVALID_PARAMETER 0xF1
-#define CAUSE_UNSPECIFIED_ERROR 0xFF
-
-#define BOOTMODE_BOOTLOADER     0x00
-#define BOOTMODE_APPLICATION    0x80
-
-#define MEMTYPE_FLASH           0x01
-#define MEMTYPE_EEPROM          0x02
-
-#define BOOTWAIT_EXPIRED        0x00
-#define BOOTWAIT_RUNNING        0x01
-#define BOOTWAIT_INTERRUPTED    0x02
 
 #define UART_CALC_BAUDRATE(baudRate) (((uint32_t)F_CPU) / (((uint32_t)baudRate)*16) -1)
 
@@ -136,6 +120,28 @@
  *
  */
 
+#define CMD_WAIT                0x00
+#define CMD_SWITCH_MODE         0x01
+#define CMD_GET_VERSION         0x02
+#define CMD_GET_CHIPINFO        0x03
+#define CMD_READ_MEMORY         0x11
+#define CMD_WRITE_MEMORY        0x12
+
+#define CAUSE_SUCCESS           0x00
+#define CAUSE_NOT_SUPPORTED     0xF0
+#define CAUSE_INVALID_PARAMETER 0xF1
+#define CAUSE_UNSPECIFIED_ERROR 0xFF
+
+#define BOOTMODE_BOOTLOADER     0x00
+#define BOOTMODE_APPLICATION    0x80
+
+#define MEMTYPE_FLASH           0x01
+#define MEMTYPE_EEPROM          0x02
+
+#define BOOTWAIT_EXPIRED        0x00
+#define BOOTWAIT_INTERRUPTED    0xFF
+
+
 const static uint8_t info[16] = VERSION_STRING;
 const static uint8_t chipinfo[8] = {
     SIGNATURE_BYTES,
@@ -149,7 +155,6 @@ const static uint8_t chipinfo[8] = {
 };
 
 volatile static uint8_t boot_timeout = TIMEOUT;
-volatile static uint8_t boot_wait = BOOTWAIT_RUNNING;
 
 static uint8_t rx_addressed;
 
@@ -168,12 +173,14 @@ static uint16_t para_address;
 static uint16_t para_size;
 
 /* write buffer */
+static uint16_t mem_address;
 static uint8_t pagebuf[SPM_PAGESIZE];
 
-static void write_flash_page(uint16_t pagestart, uint8_t *data, uint8_t size)
+static void write_flash_page(void)
 {
-    uint16_t address = pagestart;
+    uint16_t pagestart = para_address;
     uint8_t pagesize = SPM_PAGESIZE;
+    uint8_t *data = pagebuf;
 
     boot_page_erase(pagestart);
     boot_spm_busy_wait();
@@ -181,11 +188,11 @@ static void write_flash_page(uint16_t pagestart, uint8_t *data, uint8_t size)
     do {
         uint16_t dataword;
 
-        dataword  =  (size-- != 0) ? *data++ : 0xFF;
-        dataword |= ((size-- != 0) ? *data++ : 0xFF) << 8;
-        boot_page_fill(address, dataword);
+        dataword = (*data++);
+        dataword |= (*data++) << 8;
+        boot_page_fill(para_address, dataword);
 
-        address += 2;
+        para_address += 2;
         pagesize -= 2;
     } while (pagesize);
 
@@ -195,20 +202,22 @@ static void write_flash_page(uint16_t pagestart, uint8_t *data, uint8_t size)
 }
 
 #if (EEPROM_SUPPORT)
-static uint8_t read_eeprom_byte(uint16_t address)
+static uint8_t read_eeprom_byte(void)
 {
-    EEARL = address;
-    EEARH = (address >> 8);
+    EEARL = para_address;
+    EEARH = (para_address >> 8);
     EECR |= (1<<EERE);
     return EEDR;
 }
 
-static void write_eeprom_page(uint16_t address, uint8_t *data, uint16_t size)
+static void write_eeprom_page(uint16_t size)
 {
+    uint8_t *data = pagebuf;
+
     while (size--) {
-        EEARL = address;
-        EEARH = (address >> 8);
-        address++;
+        EEARL = para_address;
+        EEARH = (para_address >> 8);
+        para_address++;
         EEDR = *data++;
 #if defined (__AVR_ATmega32__)
         EECR |= (1<<EEMWE);
@@ -230,13 +239,13 @@ ISR(USART_RXC_vect)
         if (data == MPM_ADDRESS) {
 #if 0
             /* stay in bootloader */
-            boot_wait    = BOOTWAIT_INTERRUPTED;
+            boot_timeout = BOOTWAIT_INTERRUPTED;
 #else
             /* restart timeout */
             boot_timeout = TIMEOUT;
 #endif
             /* enable LED */
-            PORTD &= ~(1<<LED);
+            LED_ON();
 
             UCSRA &= ~(1<<MPCM);
             rx_addressed = 1;
@@ -267,7 +276,7 @@ ISR(USART_RXC_vect)
 
                     case 1:
                     case 2:
-                        para_address = (para_address << 8) | data;
+                        mem_address = (mem_address << 8) | data;
                         break;
 
                     case 3:
@@ -314,17 +323,19 @@ ISR(USART_RXC_vect)
                 case CMD_WRITE_MEMORY:
                     if (para_memtype == MEMTYPE_FLASH) {
                         /* only access application area */
-                        if (para_address > (BOOTLOADER_START - SPM_PAGESIZE)) {
+                        if (mem_address > (BOOTLOADER_START - SPM_PAGESIZE)) {
                             tx_length = 0;
                             tx_cause  = CAUSE_INVALID_PARAMETER;
 
                         /* writes must pagesize aligned */
                         } else if (tx_cmd == CMD_WRITE_MEMORY) {
-                            if (((para_address & (SPM_PAGESIZE -1)) == 0x00) &&
+                            if (((mem_address & (SPM_PAGESIZE -1)) == 0x00) &&
                                 (para_size <= SPM_PAGESIZE)
                                ) {
-                                write_flash_page(para_address, pagebuf, para_size);
-                                para_address += para_size;
+                                while (para_size < SPM_PAGESIZE) {
+                                    pagebuf[para_size] = 0xFF;
+                                }
+                                write_flash_page();
 
                             } else {
                                 tx_cause = CAUSE_INVALID_PARAMETER;
@@ -332,12 +343,11 @@ ISR(USART_RXC_vect)
                         }
 #if (EEPROM_SUPPORT)
                     } else if (para_memtype == MEMTYPE_EEPROM) {
-                        if ((para_address > (E2END +1)) || ((para_address + para_size) > (E2END +1))) {
+                        if ((mem_address > (E2END +1)) || ((mem_address + para_size) > (E2END +1))) {
                             tx_cause = CAUSE_INVALID_PARAMETER;
 
                         } else if (tx_cmd == CMD_WRITE_MEMORY) {
-                            write_eeprom_page(para_address, pagebuf, para_size);
-                            para_address += para_size;
+                            write_eeprom_page(para_size);
                         }
 #endif /*(EEPROM_SUPPORT) */
                     } else {
@@ -363,7 +373,7 @@ ISR(USART_UDRE_vect)
 {
     if (tx_bcnt == 0) {
         /* enable RS485 transmitter */
-        PORTD |= (1<<RXTX);
+        RXTX_PORT |= (1<<RXTX_NUM);
 
         UCSRB &= ~(1<<TXB8);
         UDR    = tx_cmd;
@@ -389,10 +399,11 @@ ISR(USART_UDRE_vect)
 
         } else if (tx_cmd == CMD_READ_MEMORY) {
             if (para_memtype == MEMTYPE_FLASH) {
-                data = pgm_read_byte_near(para_address++);
+                data = pgm_read_byte_near(mem_address++);
 #if (EEPROM_SUPPORT)
             } else if (para_memtype == MEMTYPE_EEPROM) {
-                data = read_eeprom_byte(para_address++);
+                data = read_eeprom_byte();
+                mem_address++;
 #endif /* (EEPROM_SUPPORT) */
             }
         }
@@ -410,10 +421,10 @@ ISR(USART_UDRE_vect)
 ISR(USART_TXC_vect)
 {
     /* disable LED */
-    PORTD |= (1<<LED);
+    LED_OFF();
 
     /* disable RS485 transmitter */
-    PORTD &= ~(1<<RXTX);
+    RXTX_PORT &= ~(1<<RXTX_NUM);
 
     /* enable MP mode again */
     UCSRA |= (1<<MPCM);
@@ -421,7 +432,7 @@ ISR(USART_TXC_vect)
 
     /* switch to application after everything is transmitted */
     if ((tx_cmd == CMD_SWITCH_MODE) && (para_mode == BOOTMODE_APPLICATION)) {
-        boot_wait = BOOTWAIT_EXPIRED;
+        boot_timeout = BOOTWAIT_EXPIRED;
     }
 }
 
@@ -430,13 +441,17 @@ ISR(TIMER0_OVF_vect)
     /* restart timer */
     TCNT0 = TIMER_RELOAD;
 
-    if (boot_wait == BOOTWAIT_RUNNING) {
-        PORTD ^= (1<<LED);
+    switch (boot_timeout) {
+        default:
+            boot_timeout--;
+            /* fall-through */
 
-        boot_timeout--;
-        if (boot_timeout == 0) {
-            boot_wait = BOOTWAIT_EXPIRED;
-        }
+        case BOOTWAIT_INTERRUPTED:
+            LED_TOGGLE();
+            /* fall-through */
+
+        case BOOTWAIT_EXPIRED:
+            break;
     }
 }
 
@@ -456,7 +471,8 @@ int main(void) __attribute__ ((noreturn));
 int main(void)
 {
     /* LED and TXEN are outputs */
-    DDRD |= (1<<LED) | (1<<RXTX);
+    LED_INIT();
+    RXTX_DDR |= (1<<RXTX_NUM);
 
 #if defined(OSCCAL_VALUE)
     OSCCAL = OSCCAL_VALUE;
@@ -491,7 +507,7 @@ int main(void)
 
     sei();
 
-    while (boot_wait != BOOTWAIT_EXPIRED);
+    while (boot_timeout != BOOTWAIT_EXPIRED);
 
     cli();
 
@@ -506,7 +522,7 @@ int main(void)
 #endif
 
     /* disable LED */
-    PORTD |= (1<<LED);
+    LED_OFF();
 
     uint16_t wait = 0x0000;
     do {
